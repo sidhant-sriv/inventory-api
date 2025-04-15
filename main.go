@@ -68,6 +68,9 @@ func main() {
 		userGroup.DELETE("/:user_id", routes.DeleteUser())
 	}
 
+	// Item routes
+	routes.ItemRoutes(router)
+	routes.LocationRoutes(router)
 	// Get the port from environment variables or use default
 	port := os.Getenv("PORT")
 	if port == "" {

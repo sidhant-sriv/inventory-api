@@ -43,5 +43,8 @@ func GetDB() *gorm.DB {
 
 func MakeMigration(DB *gorm.DB) {
 	DB.AutoMigrate(&models.User{})
+	DB.AutoMigrate(&models.Item{})
+	DB.AutoMigrate(&models.Location{})
+
 	fmt.Println("Database migrated successfully")
 }
