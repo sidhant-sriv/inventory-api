@@ -12,16 +12,56 @@ import (
 // LocationRoutes sets up the routes for location-related operations
 func LocationRoutes(router *gin.Engine) {
 	// Public route for listing locations
-	router.GET("/locations", GetAllLocations())
-	
+	router.GET("/locations/public", GetPublicLocations())
+
 	// Protected routes
 	locationRoutes := router.Group("/locations")
 	locationRoutes.Use(middleware.AuthMiddleware())
 	{
 		locationRoutes.POST("/", CreateLocation())
+		locationRoutes.GET("/", GetUserLocations())
 		locationRoutes.GET("/:location_id", GetLocation())
 		locationRoutes.PUT("/:location_id", UpdateLocation())
 		locationRoutes.DELETE("/:location_id", DeleteLocation())
+	}
+}
+
+// GetPublicLocations retrieves all public locations (not associated with specific users)
+func GetPublicLocations() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var locations []models.Location
+
+		// Get public locations (where UserID is 0 or NULL)
+		DB := db.GetDB()
+		if result := DB.Where("user_id = 0 OR user_id IS NULL").Find(&locations); result.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve public locations: " + result.Error.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"locations": locations})
+	}
+}
+
+// GetUserLocations retrieves all locations for the authenticated user
+func GetUserLocations() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var locations []models.Location
+
+		// Get the user ID from the JWT token
+		userID := middleware.GetUserID(c)
+		if userID == 0 {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found in token"})
+			return
+		}
+
+		// Get all locations for the user (include public locations too)
+		DB := db.GetDB()
+		if result := DB.Where("user_id = ? OR user_id = 0 OR user_id IS NULL", userID).Find(&locations); result.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve locations: " + result.Error.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"locations": locations})
 	}
 }
 
@@ -33,6 +73,14 @@ func CreateLocation() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+
+		// Set the UserID from the authenticated user
+		userID := middleware.GetUserID(c)
+		if userID == 0 {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found in token"})
+			return
+		}
+		location.UserID = userID
 
 		// Create the location in database
 		DB := db.GetDB()
@@ -51,11 +99,19 @@ func GetLocation() gin.HandlerFunc {
 		locationID := c.Param("location_id")
 		var location models.Location
 
+		// Get the user ID from the JWT token
+		userID := middleware.GetUserID(c)
+		if userID == 0 {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found in token"})
+			return
+		}
+
 		// Get the location from the database
 		DB := db.GetDB()
-		if result := DB.First(&location, locationID); result.Error != nil {
+		// Allow access if location is public (user_id = 0 or NULL) or owned by the current user
+		if result := DB.Where("id = ? AND (user_id = ? OR user_id = 0 OR user_id IS NULL)", locationID, userID).First(&location); result.Error != nil {
 			if result.Error == gorm.ErrRecordNotFound {
-				c.JSON(http.StatusNotFound, gin.H{"error": "Location not found"})
+				c.JSON(http.StatusNotFound, gin.H{"error": "Location not found or access denied"})
 			} else {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve location: " + result.Error.Error()})
 			}
@@ -66,33 +122,24 @@ func GetLocation() gin.HandlerFunc {
 	}
 }
 
-// GetAllLocations retrieves all locations
-func GetAllLocations() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var locations []models.Location
-
-		// Get all locations
-		DB := db.GetDB()
-		if result := DB.Find(&locations); result.Error != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve locations: " + result.Error.Error()})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{"locations": locations})
-	}
-}
-
 // UpdateLocation handles the update of an existing location
 func UpdateLocation() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		locationID := c.Param("location_id")
 		var location models.Location
 
+		// Get the user ID from the JWT token
+		userID := middleware.GetUserID(c)
+		if userID == 0 {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found in token"})
+			return
+		}
+
 		// Get the location from the database
 		DB := db.GetDB()
-		if result := DB.First(&location, locationID); result.Error != nil {
+		if result := DB.Where("id = ? AND user_id = ?", locationID, userID).First(&location); result.Error != nil {
 			if result.Error == gorm.ErrRecordNotFound {
-				c.JSON(http.StatusNotFound, gin.H{"error": "Location not found"})
+				c.JSON(http.StatusNotFound, gin.H{"error": "Location not found or you don't have permission to update it"})
 			} else {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve location: " + result.Error.Error()})
 			}
@@ -100,10 +147,17 @@ func UpdateLocation() gin.HandlerFunc {
 		}
 
 		// Bind the updated location data from the request
-		if err := c.ShouldBindJSON(&location); err != nil {
+		var updateData models.Location
+		if err := c.ShouldBindJSON(&updateData); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+
+		// Update fields (preserving UserID)
+		location.Name = updateData.Name
+		location.Description = updateData.Description
+		location.ImageUrl = updateData.ImageUrl
+		// Don't allow changing the UserID
 
 		// Update the location in the database
 		if result := DB.Save(&location); result.Error != nil {
@@ -119,13 +173,20 @@ func UpdateLocation() gin.HandlerFunc {
 func DeleteLocation() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		locationID := c.Param("location_id")
-		var location models.Location
 
-		// Get the location from the database
+		// Get the user ID from the JWT token
+		userID := middleware.GetUserID(c)
+		if userID == 0 {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found in token"})
+			return
+		}
+
+		// Get the location from the database with user ownership check
 		DB := db.GetDB()
-		if result := DB.First(&location, locationID); result.Error != nil {
+		var location models.Location
+		if result := DB.Where("id = ? AND user_id = ?", locationID, userID).First(&location); result.Error != nil {
 			if result.Error == gorm.ErrRecordNotFound {
-				c.JSON(http.StatusNotFound, gin.H{"error": "Location not found"})
+				c.JSON(http.StatusNotFound, gin.H{"error": "Location not found or you don't have permission to delete it"})
 			} else {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve location: " + result.Error.Error()})
 			}

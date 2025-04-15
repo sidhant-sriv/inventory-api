@@ -11,6 +11,7 @@ type User struct {
 	Email     string         `gorm:"unique" json:"email"`
 	Password  string         `json:"-"` // hide from JSON response
 	Items     []Item         `gorm:"foreignKey:UserID" json:"items,omitempty"`
+	Locations []Location     `gorm:"foreignKey:UserID" json:"locations,omitempty"` // personalized locations
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
@@ -34,5 +35,7 @@ type Location struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	ImageUrl    string `json:"image_url"`
+	UserID      uint   `json:"user_id"`                    // associates the location with a user
+	User        User   `gorm:"foreignKey:UserID" json:"-"` // optional: hide user details in JSON if needed
 	Items       []Item `gorm:"foreignKey:LocationID" json:"items,omitempty"`
 }
